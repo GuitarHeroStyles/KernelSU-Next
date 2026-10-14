@@ -45,6 +45,9 @@
 #include "selinux/selinux.h"
 #include "policy/feature.h"
 #include "compat/kernel_compat.h"
+#ifdef CONFIG_KSU_SUSFS
+void ksu_susfs_compat_cache_sid(void);
+#endif
 
 static const char KERNEL_SU_RC[] =
 	"\n"
@@ -272,6 +275,9 @@ static void ksu_initialize_selinux_tw_func(struct callback_head *cb)
 	apply_kernelsu_rules();
 	ksu_feature_apply_forced();
 	cache_sid();
+#ifdef CONFIG_KSU_SUSFS
+	ksu_susfs_compat_cache_sid();
+#endif
 	setup_ksu_cred();
 	kfree(cb);
 }
