@@ -107,6 +107,9 @@ endif
 # legacy: keep version derived from commit count, with a +289 offset so
 # the reported ksuver stays in line with the manager versionCode
 # (maintainer preference, #1549)
+# a52sxq: legacy branch's commit count lags behind the dev branch where
+# v3.4.2 was tagged, so pin the reported version to match the Manager.
+KSU_VERSION_OVERRIDE := 33644
 ifdef KSU_VERSION_OVERRIDE
 KSU_VERSION := $(KSU_VERSION_OVERRIDE)
 $(info -- KernelSU-Next version override: $(KSU_VERSION))
