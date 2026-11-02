@@ -30,6 +30,7 @@
 #include "feature/sucompat.h"
 #include "feature/adb_root.h"
 #include "runtime/ksud.h"
+#include "supercall/supercall.h"
 
 // The pt_regs-based syscall ABI (__arm64_sys_*/__x64_sys_*) exists since 4.17
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4, 17, 0)
@@ -213,6 +214,22 @@ static long ksu_sth_newfstatat(const struct pt_regs *regs)
 }
 #endif
 
+#ifdef __NR_reboot
+// Supercall entry: KSU_INSTALL_MAGIC1 requests never match the kernel's own
+// reboot magic, so the original syscall rejects them after we handled them.
+static long ksu_sth_reboot(const struct pt_regs *regs)
+{
+	int magic1 = (int)PT_REGS_PARM1(regs);
+	int magic2 = (int)PT_REGS_PARM2(regs);
+	unsigned int cmd = (unsigned int)PT_REGS_PARM3(regs);
+	void __user *arg = (void __user *)PT_REGS_SYSCALL_PARM4(regs);
+
+	ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);
+
+	return ksu_sth_call_orig(__NR_reboot, regs);
+}
+#endif
+
 void __init ksu_syscall_table_hook_init(void)
 {
 	struct {
@@ -230,6 +247,9 @@ void __init ksu_syscall_table_hook_init(void)
 #endif
 #ifdef __NR_newfstatat
 		{ __NR_newfstatat, ksu_sth_newfstatat },
+#endif
+#ifdef __NR_reboot
+		{ __NR_reboot, ksu_sth_reboot },
 #endif
 	};
 	int i, patched = 0;

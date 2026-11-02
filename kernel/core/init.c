@@ -28,9 +28,13 @@
 #ifdef CONFIG_KSU_SUSFS
 #include <linux/susfs.h>
 void __init ksu_susfs_compat_init(void);
+void ksu_susfs_compat_exit(void);
 #endif
 
 extern void __init ksu_lsm_hook_init(void);
+#if defined(MODULE) && !defined(KSU_KPROBES_HOOK)
+extern void ksu_lsm_hook_exit(void);
+#endif
 extern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,
 					void *argv, void *envp, int *flags);
 
@@ -88,7 +92,10 @@ __attribute__((naked)) int __init kernelsu_init_early(void)
 #define NEED_OWN_STACKPROTECTOR 0
 #endif
 
+// With SUSFS built in and KSU as a module, fs/susfs.c owns ksu_cred.
+#if !(defined(MODULE) && defined(CONFIG_KSU_SUSFS))
 struct cred *ksu_cred;
+#endif
 bool ksu_late_loaded;
 
 #ifdef CONFIG_KSU_DEBUG
@@ -216,6 +223,9 @@ int __init kernelsu_init(void)
 void __exit kernelsu_exit(void)
 {
 	// Phase 1: Stop all hooks first to prevent new callbacks
+#if defined(MODULE) && !defined(KSU_KPROBES_HOOK)
+	ksu_lsm_hook_exit();
+#endif
 	ksu_syscall_hook_manager_exit();
 
 	ksu_supercalls_exit();
@@ -245,8 +255,13 @@ void __exit kernelsu_exit(void)
 
 	ksu_feature_exit();
 
+#ifdef CONFIG_KSU_SUSFS
+	ksu_susfs_compat_exit();
+#endif
+
 	if (ksu_cred) {
 		put_cred(ksu_cred);
+		ksu_cred = NULL;
 	}
 }
 

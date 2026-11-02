@@ -22,6 +22,8 @@
 #include <linux/jump_label.h>
 #include <linux/security.h>
 #include <linux/string.h>
+#include <linux/compiler.h>
+#include <linux/cred.h>
 
 #include "../selinux/selinux.h"
 
@@ -31,12 +33,33 @@
 
 DEFINE_STATIC_KEY_TRUE(ksu_is_init_rc_hook_enabled);
 
+#ifdef MODULE
+// KSU is a loadable module: the built-in fs/susfs.c owns these and calls
+// back into KSU through the hooks registered below.
+extern u32 susfs_ksu_sid;
+extern u32 susfs_priv_app_sid;
+extern bool (*susfs_ksu_is_current_domain_fn)(void);
+extern void (*susfs_ksu_setup_selinux_fn)(const char *domain, struct cred *cred);
+#else
 u32 susfs_ksu_sid = 0;
 u32 susfs_priv_app_sid = 0;
+#endif
 
 void __init ksu_susfs_compat_init(void)
 {
 	static_branch_disable(&ksu_is_init_rc_hook_enabled);
+#ifdef MODULE
+	WRITE_ONCE(susfs_ksu_setup_selinux_fn, setup_selinux);
+	WRITE_ONCE(susfs_ksu_is_current_domain_fn, is_ksu_domain);
+#endif
+}
+
+void ksu_susfs_compat_exit(void)
+{
+#ifdef MODULE
+	WRITE_ONCE(susfs_ksu_is_current_domain_fn, NULL);
+	WRITE_ONCE(susfs_ksu_setup_selinux_fn, NULL);
+#endif
 }
 
 // Called after SELinux policy is loaded, alongside KSUN's own cache_sid(),
@@ -56,10 +79,12 @@ void ksu_susfs_compat_cache_sid(void)
 		susfs_priv_app_sid = 0;
 }
 
+#ifndef MODULE
 bool susfs_is_current_ksu_domain(void)
 {
 	return is_ksu_domain();
 }
+#endif
 
 void ksu_handle_vfs_fstat(int fd, loff_t *kstat_size_ptr)
 {

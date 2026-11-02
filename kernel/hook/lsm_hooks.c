@@ -10,6 +10,7 @@
 #include "compat/kernel_compat.h"
 #include "setuid_hook.h"
 #include "manager/throne_tracker.h"
+#include "hook/patch_memory.h"
 
 #ifndef KSU_KPROBES_HOOK
 
@@ -142,6 +143,62 @@ static const struct lsm_id ksu_lsmid = {
 };
 #endif
 
+#ifdef MODULE
+/*
+ * security_add_hooks() is __init and security_hook_heads is read-only after
+ * boot, so a module appends its hooks by hand, writing the pointers through
+ * ksu_patch_text() like the syscall table hook does.
+ */
+static int ksu_lsm_patch_ptr(struct hlist_node **slot, struct hlist_node *val)
+{
+	return ksu_patch_text(slot, &val, sizeof(val), KSU_PATCH_TEXT_FLUSH_DCACHE);
+}
+
+void __init ksu_lsm_hook_init(void)
+{
+	int i, added = 0;
+
+	for (i = 0; i < ARRAY_SIZE(ksu_hooks); i++) {
+		struct security_hook_list *hook = &ksu_hooks[i];
+		struct hlist_node *last = NULL, *n;
+		struct hlist_node **slot;
+
+		for (n = READ_ONCE(hook->head->first); n; n = READ_ONCE(n->next))
+			last = n;
+		slot = last ? &last->next : &hook->head->first;
+
+		hook->lsm = "ksu";
+		hook->list.next = NULL;
+		hook->list.pprev = slot;
+		smp_wmb();
+
+		if (ksu_lsm_patch_ptr(slot, &hook->list)) {
+			pr_err("LSM hook %d: patch failed\n", i);
+			hook->list.pprev = NULL;
+			continue;
+		}
+		added++;
+	}
+	pr_info("LSM hooks initialized (module): %d/%ld\n", added,
+		(long)ARRAY_SIZE(ksu_hooks));
+}
+
+void ksu_lsm_hook_exit(void)
+{
+	int i;
+
+	for (i = ARRAY_SIZE(ksu_hooks) - 1; i >= 0; i--) {
+		struct security_hook_list *hook = &ksu_hooks[i];
+
+		// Our hooks were appended last, so unlinking only rewrites *pprev.
+		if (!hook->list.pprev || hook->list.next)
+			continue;
+		if (ksu_lsm_patch_ptr(hook->list.pprev, NULL))
+			pr_err("LSM hook %d: unpatch failed\n", i);
+		hook->list.pprev = NULL;
+	}
+}
+#else
 void __init ksu_lsm_hook_init(void)
 {
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 8, 0)
@@ -154,6 +211,7 @@ void __init ksu_lsm_hook_init(void)
 #endif
 	pr_info("LSM hooks initialized.\n");
 }
+#endif // MODULE
 #else
 void __init ksu_lsm_hook_init(void)
 {
