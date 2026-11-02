@@ -136,4 +136,13 @@ extern long strncpy_from_user_nofault(char *dst, const void __user *unsafe_addr,
 #endif
 #endif
 
+/*
+ * <linux/preempt.h> drops preempt_enable_no_resched_notrace() when building
+ * a module (#ifdef MODULE), so fall back to the resched-checking variant.
+ */
+#include <linux/preempt.h>
+#ifndef preempt_enable_no_resched_notrace
+#define preempt_enable_no_resched_notrace() preempt_enable_notrace()
+#endif
+
 #endif // #ifndef __KSU_H_KERNEL_COMPAT
