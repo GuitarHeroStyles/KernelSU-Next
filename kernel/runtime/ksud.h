@@ -43,4 +43,15 @@ void ksu_stop_input_hook_runtime(void);
 
 extern bool ksu_execveat_hook __read_mostly;
 
+#ifndef KSU_KPROBES_HOOK
+struct stat;
+
+extern bool ksu_init_rc_hook __read_mostly;
+
+int ksu_handle_execve_ksud(const char __user *filename_user,
+			   const char __user *const __user *__argv);
+void ksu_handle_sys_read(unsigned int fd);
+void ksu_handle_newfstat_ret(unsigned int *fd, struct stat __user **statbuf_ptr);
+#endif
+
 #endif

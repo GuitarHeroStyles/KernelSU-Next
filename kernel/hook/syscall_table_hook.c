@@ -140,12 +140,39 @@ static void ksu_sth_init_exec_tracker(const char __user *filename_user)
 	}
 }
 
+#ifndef KSU_KPROBES_HOOK
+// When KernelSU is a module, the manual hooks in fs/exec.c, fs/read_write.c
+// and fs/stat.c are compiled out (CONFIG_KSU is not set for =m), so the ksud
+// boot flow - second_stage SELinux setup, init.rc injection and post-fs-data
+// on the first zygote - has to be driven from the table hook instead.
+static void ksu_sth_ksud_execve(const char __user *filename_user,
+				const char __user *const __user *argv_user)
+{
+	if (likely(!READ_ONCE(ksu_execveat_hook)))
+		return;
+
+	if (current->pid != 1 && !is_init(current_cred()))
+		return;
+
+	ksu_handle_execve_ksud(filename_user, argv_user);
+}
+#else
+static inline void
+ksu_sth_ksud_execve(const char __user *filename_user,
+		    const char __user *const __user *argv_user)
+{
+}
+#endif
+
 #ifdef __NR_execve
 static long ksu_sth_execve(const struct pt_regs *regs)
 {
 	const char __user **filename_user =
 		(const char __user **)&PT_REGS_PARM1(regs);
 	long adb_ret = 0;
+
+	ksu_sth_ksud_execve(*filename_user,
+			    (const char __user *const __user *)PT_REGS_PARM2(regs));
 
 	if (current->pid != 1 && is_init(current_cred())) {
 		ksu_sth_init_exec_tracker(*filename_user);
@@ -170,6 +197,10 @@ static long ksu_sth_execveat(const struct pt_regs *regs)
 	// New bionic maps execve to execveat(AT_FDCWD, path, argv, envp, 0)
 	if ((int)PT_REGS_PARM1(regs) == AT_FDCWD &&
 	    (int)PT_REGS_SYSCALL_PARM4(regs) == 0) {
+		ksu_sth_ksud_execve(
+			*filename_user,
+			(const char __user *const __user *)PT_REGS_PARM3(regs));
+
 		if (current->pid != 1 && is_init(current_cred())) {
 			ksu_sth_init_exec_tracker(*filename_user);
 			adb_ret = ksu_adb_root_handle_execveat(
@@ -214,6 +245,35 @@ static long ksu_sth_newfstatat(const struct pt_regs *regs)
 }
 #endif
 
+#ifndef KSU_KPROBES_HOOK
+#ifdef __NR_read
+// init.rc injection: swap in the read proxy on init's first read of init.rc.
+static long ksu_sth_read(const struct pt_regs *regs)
+{
+	if (unlikely(READ_ONCE(ksu_init_rc_hook)))
+		ksu_handle_sys_read((unsigned int)PT_REGS_PARM1(regs));
+
+	return ksu_sth_call_orig(__NR_read, regs);
+}
+#endif
+
+#ifdef __NR_fstat
+// init sizes init.rc with fstat() before reading it; grow st_size by the
+// injected rc so the appended part is not cut off.
+static long ksu_sth_fstat(const struct pt_regs *regs)
+{
+	unsigned int fd = (unsigned int)PT_REGS_PARM1(regs);
+	struct stat __user *statbuf = (struct stat __user *)PT_REGS_PARM2(regs);
+	long ret = ksu_sth_call_orig(__NR_fstat, regs);
+
+	if (!ret && unlikely(READ_ONCE(ksu_init_rc_hook)))
+		ksu_handle_newfstat_ret(&fd, &statbuf);
+
+	return ret;
+}
+#endif
+#endif // !KSU_KPROBES_HOOK
+
 #ifdef __NR_reboot
 // Supercall entry: KSU_INSTALL_MAGIC1 requests never match the kernel's own
 // reboot magic, so the original syscall rejects them after we handled them.
@@ -250,6 +310,14 @@ void __init ksu_syscall_table_hook_init(void)
 #endif
 #ifdef __NR_reboot
 		{ __NR_reboot, ksu_sth_reboot },
+#endif
+#ifndef KSU_KPROBES_HOOK
+#ifdef __NR_read
+		{ __NR_read, ksu_sth_read },
+#endif
+#ifdef __NR_fstat
+		{ __NR_fstat, ksu_sth_fstat },
+#endif
 #endif
 	};
 	int i, patched = 0;
