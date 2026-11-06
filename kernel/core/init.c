@@ -61,9 +61,12 @@ int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv,
 // Therefore, ksu lkm, which uses gki toolchain, requires this __stack_chk_guard,
 // while those third-party kernel can't provide.
 // Thus, we manually provide it instead of using kernel's
+// Not with CONFIG_CFI_CLANG: the naked kernelsu_init_early below has no CFI
+// type metadata, so do_one_initcall's CFI check traps on it (BRK -> panic).
 #if defined(CONFIG_STACKPROTECTOR) &&                                          \
     (defined(CONFIG_ARM64) && defined(MODULE) &&                               \
-     !defined(CONFIG_STACKPROTECTOR_PER_TASK))
+     !defined(CONFIG_STACKPROTECTOR_PER_TASK)) &&                              \
+    !defined(CONFIG_CFI_CLANG)
 #include <linux/stackprotector.h>
 #include <linux/random.h>
 unsigned long __stack_chk_guard __ro_after_init
@@ -267,10 +270,26 @@ void __exit kernelsu_exit(void)
 
 #if NEED_OWN_STACKPROTECTOR
 module_init(kernelsu_init_early);
-#else
-module_init(kernelsu_init);
-#endif
 module_exit(kernelsu_exit);
+#else
+// Static entry points: with CONFIG_CFI_CLANG + LTO, aliasing init_module /
+// cleanup_module to the global kernelsu_init/kernelsu_exit leaves the
+// module's .init pointing at the raw body (no .cfi_jt), so the CFI check in
+// do_one_initcall traps. Static functions get a jump table entry like any
+// other module's.
+static int __init kernelsu_module_init(void)
+{
+	return kernelsu_init();
+}
+
+static void __exit kernelsu_module_exit(void)
+{
+	kernelsu_exit();
+}
+
+module_init(kernelsu_module_init);
+module_exit(kernelsu_module_exit);
+#endif
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("weishu");
