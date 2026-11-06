@@ -32,6 +32,16 @@
 #include "asm/cacheflush.h"
 #include "asm-generic/fixmap.h"
 
+// pud_leaf()/pmd_leaf() only exist since 5.6. Older arm64 kernels map the
+// kernel image (rodata included) with section entries, which p?d_bad()
+// rejects, so fall back to the arm64 *_sect() helpers there.
+#if !defined(pud_leaf) && defined(pud_sect)
+#define pud_leaf(pud) pud_sect(pud)
+#endif
+#if !defined(pmd_leaf) && defined(pmd_sect)
+#define pmd_leaf(pmd) pmd_sect(pmd)
+#endif
+
 // https://github.com/fuqiuluo/ovo/blob/f7da411458e87d32438dc14fce5a3313ed0c967e/ovo/mmuhack.c#L21
 
 // Translate a kernel virtual address to a physical address by walking the
@@ -74,7 +84,7 @@ unsigned long phys_from_virt(unsigned long addr, int *err)
 #else
     pud = pud_offset(pgd, addr);
 #endif
-    if (pud_none(*pud) || pud_bad(*pud))
+    if (pud_none(*pud))
         goto fail;
     pr_debug("pud of 0x%lx p=0x%lx v=0x%lx", addr, (uintptr_t)pud,
              (uintptr_t)pud_val(*pud));
@@ -84,6 +94,8 @@ unsigned long phys_from_virt(unsigned long addr, int *err)
         return __pud_to_phys(*pud) + ((addr & ~PUD_MASK));
     }
 #endif
+    if (pud_bad(*pud))
+        goto fail;
 
     pmd = pmd_offset(pud, addr);
     pr_debug("pmd of 0x%lx p=0x%lx v=0x%lx", addr, (uintptr_t)pmd,
