@@ -306,16 +306,42 @@ int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd,
 }
 
 #ifdef KSU_KPROBES_HOOK
+#include <linux/pid_namespace.h>
+#include <linux/capability.h>
+#include <linux/sched.h>
+
+/*
+ * Runs in place of sys_reboot for KernelSU calls, in normal (sleepable)
+ * syscall context. The kprobe pre-handler runs with preemption disabled,
+ * where copy_{from,to}_user cannot fault pages in, so larger SUSFS
+ * requests (e.g. the 8K enabled_features buffer) failed with -EFAULT.
+ */
+static long ksu_reboot_redirect(const struct pt_regs *regs)
+{
+	int magic1 = (int)PT_REGS_PARM1(regs);
+	int magic2 = (int)PT_REGS_PARM2(regs);
+	unsigned int cmd = (unsigned int)PT_REGS_PARM3(regs);
+	void __user *arg = (void __user *)PT_REGS_SYSCALL_PARM4(regs);
+
+	ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);
+
+	/* What the real syscall returns for a non-reboot magic */
+	if (!ns_capable(task_active_pid_ns(current)->user_ns, CAP_SYS_BOOT))
+		return -EPERM;
+	return -EINVAL;
+}
+
 static int reboot_handler_pre(struct kprobe *p, struct pt_regs *regs)
 {
 	struct pt_regs *real_regs = PT_REAL_REGS(regs);
 	int magic1 = (int)PT_REGS_PARM1(real_regs);
-	int magic2 = (int)PT_REGS_PARM2(real_regs);
-	unsigned int cmd = (unsigned int)PT_REGS_PARM3(real_regs);
-	unsigned long arg4 = (unsigned long)PT_REGS_SYSCALL_PARM4(real_regs);
-	unsigned long reply = (unsigned long)arg4;
 
-	return ksu_handle_sys_reboot(magic1, magic2, cmd, (void __user **)&arg4);
+	if (magic1 != KSU_INSTALL_MAGIC1)
+		return 0;
+
+	/* x0 still holds the syscall's pt_regs; lr returns to the caller */
+	instruction_pointer_set(regs, (unsigned long)ksu_reboot_redirect);
+	return 1;
 }
 
 static struct kprobe reboot_kp = {

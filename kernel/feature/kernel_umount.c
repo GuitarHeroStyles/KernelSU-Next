@@ -22,6 +22,13 @@
 #include "ksu.h"
 #include "compat/kernel_compat.h"
 
+#ifdef CONFIG_KSU_SUSFS
+#include <linux/workqueue.h>
+#include <linux/susfs_def.h>
+
+extern struct work_struct susfs_extra_works;
+#endif
+
 static bool ksu_kernel_umount_enabled = true;
 
 static int kernel_umount_feature_get(u64 *value)
@@ -121,19 +128,6 @@ int ksu_handle_umount(uid_t old_uid, uid_t new_uid)
 {
 	struct umount_tw *tw;
 
-	// if there isn't any module mounted, just ignore it!
-	if (!ksu_module_mounted) {
-		return 0;
-	}
-
-	if (!ksu_kernel_umount_enabled) {
-		return 0;
-	}
-
-	if (!ksu_cred) {
-		return 0;
-	}
-
 	// There are 6 scenarios:
 	// 1. Normal app: zygote -> appuid
 	// 2. Isolated process forked from zygote: zygote -> isolated_process
@@ -158,6 +152,29 @@ int ksu_handle_umount(uid_t old_uid, uid_t new_uid)
 		pr_info("handle umount ignore non zygote child: %d\n", current->pid);
 		return 0;
 	}
+
+#ifdef CONFIG_KSU_SUSFS
+	// Mark the app so SUSFS hides mounts/paths from it, and run the
+	// deferred sus_path work. This must happen even when there is nothing
+	// for KernelSU itself to umount.
+	susfs_set_current_proc_umounted();
+	if (!work_pending(&susfs_extra_works))
+		schedule_work(&susfs_extra_works);
+#endif
+
+	// if there isn't any module mounted, just ignore it!
+	if (!ksu_module_mounted) {
+		return 0;
+	}
+
+	if (!ksu_kernel_umount_enabled) {
+		return 0;
+	}
+
+	if (!ksu_cred) {
+		return 0;
+	}
+
 	// umount the target mnt
 	pr_info("handle umount for uid: %d, pid: %d\n", new_uid, current->pid);
 
